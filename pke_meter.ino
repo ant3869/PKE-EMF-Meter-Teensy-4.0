@@ -23,58 +23,6 @@
 #define DEBUG_PRINTLN(x, d)
 #endif
 
-// ------------------ DISPLAY SETTINGS ------------------
-
-#define TOP_MARGIN 35
-#define VALUE_CLEAR_WIDTH 150  // Increased clearing width for EMF value
-#define VALUE_CLEAR_HEIGHT 40  // Increased clearing height for EMF value
-
-#define DISPLAY_WIDTH 240
-#define DISPLAY_HEIGHT 240
-
-#define DISPLAY_LEFT_MARGIN 5       // Fixed left margin for labels
-#define DISPLAY_TOP_MARGIN  5
-#define LABEL_WIDTH 10              // Width allocated for labels
-#define LABEL_HEIGHT 20
-
-#define GRAPH_X_OFFSET 30
-#define GRAPH_Y_OFFSET (DISPLAY_TOP_MARGIN + LABEL_HEIGHT)
-#define GRAPH_WIDTH  220  // Adjust graph width to prevent clipping
-#define GRAPH_HEIGHT 200            // Graph height
-
-#define MAX_DATA_POINTS 75
-#define CURVE_TENSION 0.3
-
-// ------------------ COLOR DEFINITIONS ------------------
-
-#define BACKGROUND_COLOR 0x0000
-#define GRID_COLOR 0x1082
-#define TEXT_COLOR 0xFFFF
-#define BASELINE_COLOR 0x4208
-
-#define CRITICAL_HIGH 0xF800
-#define WARNING_HIGH 0xFD20
-#define NORMAL_HIGH 0x07E0
-#define NORMAL_LOW 0x07FF
-#define WARNING_LOW 0x001F
-#define CRITICAL_LOW 0x7817
-
-// ------------------ CONSTANTS ------------------
-
-#define UPDATE_INTERVAL 50  // Milliseconds for smooth updates
-#define CALIBRATION_TIME 13000
-
-#define LED_COUNT 5
-const int LED_PINS[LED_COUNT] = {2, 3, 4, 5, 6}; 
-
-#define EMF_BUFFER_SIZE 128
-#define MIN_EMF_VALUE 0
-#define MAX_EMF_VALUE 1000
-
-#define SERVO_PIN 7
-#define SERVO_MIN_ANGLE 0
-#define SERVO_MAX_ANGLE 80
-
 // ------------------ DATA STRUCTURES ------------------
 
 struct ColorThreshold {
@@ -102,15 +50,81 @@ struct MagBaseline {
   int readings = 0;
 };
 
-// ------------------ GLOBAL VARIABLES ------------------
+// ------------------ DISPLAY SETTINGS ------------------
+
+#define TOP_MARGIN 35
+#define VALUE_CLEAR_WIDTH 150  // Increased clearing width for EMF value
+#define VALUE_CLEAR_HEIGHT 40  // Increased clearing height for EMF value
+
+#define DISPLAY_WIDTH 240
+#define DISPLAY_HEIGHT 240
+
+#define DISPLAY_LEFT_MARGIN 5       // Fixed left margin for labels
+#define DISPLAY_TOP_MARGIN  5
+#define LABEL_WIDTH 10              // Width allocated for labels
+#define LABEL_HEIGHT 20
+
+#define GRAPH_X_OFFSET 30
+#define GRAPH_Y_OFFSET (DISPLAY_TOP_MARGIN + LABEL_HEIGHT)
+#define GRAPH_WIDTH  220  // Adjust graph width to prevent clipping
+#define GRAPH_HEIGHT 200            // Graph height
+
+#define MAX_DATA_POINTS 75
+//#define EMF_BUFFER_SIZE 5
+#define CURVE_TENSION 0.3
+#define THRESHOLD_SPACING_FACTOR 0.9  // Adjust this factor to fine-tune the spacing
+
+// ------------------ COLOR DEFINITIONS ------------------
+
+#define BACKGROUND_COLOR 0x0000
+#define GRID_COLOR 0x1082
+#define TEXT_COLOR 0xFFFF
+#define BASELINE_COLOR 0x4208
+
+#define CRITICAL_HIGH 0xF800
+#define WARNING_HIGH 0xFD20
+#define NORMAL_HIGH 0x07E0
+#define NORMAL_LOW 0x07FF
+#define WARNING_LOW 0x001F
+#define CRITICAL_LOW 0x7817
+
+const uint32_t BAR_COLOR = TFT_BLUE;
+const uint32_t BG_COLOR = TFT_BLACK;
+const uint32_t FRAME_COLOR = TFT_WHITE;
+
+// ------------------ CONSTANTS ------------------
+
+#define UPDATE_INTERVAL 50  // Milliseconds for smooth updates
+#define CALIBRATION_TIME 13000
+
+#define SERVO_PIN 7
+#define SERVO_MIN_ANGLE 0
+#define SERVO_MAX_ANGLE 80
+
+#define LED_COUNT 7
+#define LED_SLOW 800
+#define LED_FAST 30
+const int LED_PINS[LED_COUNT] = {2, 3, 4, 5, 6, 14, 15}; 
+
+// Progress bar configuration
+const int BAR_X = 30;
+const int BAR_Y = 100;
+const int BAR_WIDTH = 260;
+const int BAR_HEIGHT = 20;
+const int TEXT_Y = BAR_Y - 30;
+
+// ------------------ OBJECTS ---------------------------
 
 TFT_eSPI tft = TFT_eSPI();
 Adafruit_LIS3MDL lis3mdl = Adafruit_LIS3MDL();
 DFRobotDFPlayerMini player;
+MagBaseline baseline;
 PWMServo emfServo;
 
 CircularBuffer<float, MAX_DATA_POINTS> dataBuffer;
-CircularBuffer<int16_t, EMF_BUFFER_SIZE> emfBuffer; // Buffer to store EMF readings
+CircularBuffer<float, EMF_BUFFER_SIZE> emfBuffer; // Buffer to store EMF readings
+
+// ------------------ GLOBAL VARIABLES ------------------
 
 float yMin = 0;
 float yMax = 1200;
@@ -120,7 +134,6 @@ float currentValue = 600;  // For smooth updates
 bool imuInitialized = false, playerInitialized = false, displayInitialized = false;
 bool isCalibrating = false;
 float calibrationOffset = 0.0;
-MagBaseline baseline;
 volatile unsigned long calibrationStartTime = 0;
 int ledSequenceIndex = 0;
 uint8_t lastRangeIndex = -1;
@@ -145,6 +158,46 @@ Point calculateBezierPoint(Point p0, Point p1, Point p2, Point p3, float t);
 uint16_t getColorForValue(float value);
 void drawCurvedLine(Point p1, Point p2, uint16_t color1, uint16_t color2);
 void updateGraph();
+
+// ------------------ BEZIER CURVE FUNCTIONS ------------------
+
+Point calculateBezierPoint(Point p0, Point p1, Point p2, Point p3, float t) {
+  float tt = t * t;
+  float ttt = tt * t;
+  float u = 1.0f - t;
+  float uu = u * u;
+  float uuu = uu * u;
+
+  Point pt;
+  pt.x = uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
+  pt.y = uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y;
+  return pt;
+}
+
+uint16_t getColorForValue(float value) {
+  for (size_t i = 0; i < sizeof(thresholds) / sizeof(thresholds[0]); i++) {
+    if (value >= thresholds[i].value) {
+      return thresholds[i].color;
+    }
+  }
+  return CRITICAL_LOW;
+}
+
+void drawCurvedLine(Point p1, Point p2, uint16_t color1, uint16_t color2) {
+  Point ctrl1 = { (float)(p1.x + (p2.x - p1.x) * CURVE_TENSION), p1.y };
+  Point ctrl2 = { (float)(p2.x + (p2.x - p1.x) * CURVE_TENSION), p2.y };
+
+  const int segments = 20;
+  for (int i = 0; i < segments; i++) {
+    float t1 = (float)i / segments;
+    float t2 = (float)(i + 1) / segments;
+
+    Point pt1 = calculateBezierPoint(p1, ctrl1, ctrl2, p2, t1);
+    Point pt2 = calculateBezierPoint(p1, ctrl1, ctrl2, p2, t2);
+
+    tft.drawLine(pt1.x, pt1.y, pt2.x, pt2.y, color1);
+  }
+}
 
 // ------------------ INITIALIZATION ------------------
 
@@ -203,10 +256,10 @@ void setupServo() {
 void setupPlayer() {
   for (int attempts = 0; attempts < 3; attempts++) {
     if (player.begin(Serial1)) {
-      playerInitialized = true;
-      player.setTimeOut(500);
+    //  player.setTimeOut(500);
       DEBUG_PRINTLN("DFPlayer initialized successfully.", 200);
-      setVolume(10);
+      playerInitialized = true;
+      setVolume(5);
       playBeepSFX();
       break;
     } else {
@@ -224,12 +277,12 @@ void setupIMU() {
   if (!lis3mdl.begin_I2C()) {
     DEBUG_PRINTLN("Failed to find LIS3MDL chip", 2000);
   } else {
-    imuInitialized = true;
     lis3mdl.setPerformanceMode(LIS3MDL_MEDIUMMODE);
     lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
     lis3mdl.setDataRate(LIS3MDL_DATARATE_155_HZ);
     lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
     DEBUG_PRINTLN("IMU: LIS3MDL chip found!", 300);
+    imuInitialized = true;
   }
 }
 
@@ -252,17 +305,6 @@ void setup() {
 }
 
 // ------------------ DRAW FUNCTIONS ------------------
-#define THRESHOLD_SPACING_FACTOR 0.9  // Adjust this factor to fine-tune the spacing
-
-// Progress bar configuration
-const int BAR_X = 30;
-const int BAR_Y = 100;
-const int BAR_WIDTH = 260;
-const int BAR_HEIGHT = 20;
-const int TEXT_Y = BAR_Y - 30;
-const uint32_t BAR_COLOR = TFT_BLUE;
-const uint32_t BG_COLOR = TFT_BLACK;
-const uint32_t FRAME_COLOR = TFT_WHITE;
 
 void drawProgressBar(int percentage) {
   const int barWidth = 100;
@@ -336,7 +378,7 @@ void staticBits() {
   tft.print("EMF ");
 }
 
-void drawCurrentValue(float value) {  // Definition
+void drawCurrentValue(float value) {
   static float lastValue = -1;
   if (value == lastValue) return;
   lastValue = value;
@@ -347,235 +389,6 @@ void drawCurrentValue(float value) {  // Definition
   tft.setTextColor(getColorForValue(value));
   tft.setCursor(valueX, 5);
   tft.print(value, 1);
-}
-
-// --------------------------------------------------------------- UPDATES
-
-void updateServo() {
-  if (isCalibrating) return;
-  int lastAngle = -1;
-
-  int16_t currentValue = emfBuffer.last();
-  int servoAngle = map(currentValue, EMF_MIN, EMF_MAX, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-  int servoAngle = constrain(servoAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-
-  if (servoAngle != lastAngle){
-    emfServo.write(servoAngle);
-    lastAngle = servoAngle;
-  }
-}
-
-void updateLEDSequence() {
-  if (isCalibrating) return;
-
-  int16_t currentValue = emfBuffer.last();
-  int updateRate = map(currentValue, EMF_MIN, EMF_MAX, 800, 50);
-
-  static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate >= updateRate) {
-    digitalWrite(LED_PINS[ledSequenceIndex], LOW);
-    ledSequenceIndex = (ledSequenceIndex + 1) % LED_COUNT;
-    digitalWrite(LED_PINS[ledSequenceIndex], HIGH);
-    lastUpdate = millis();
-  }
-}
-
-// --------------------------------------------------------------- SOUND CONTROL
-
-void setVolume(int volume) {
-  if (playerInitialized) {
-    player.volume(volume);
-    delay(5);
-  }
-}
-
-void playCalibrationSFX() {
-  if (playerInitialized) {
-    player.playFolder(1, 4);
-    delay(2000);
-  }
-}
-
-void playBeepSFX() {
-  setVolume(15);
-
-  if (playerInitialized) {
-    player.playFolder(1, 1);
-    delay(500);
-  }
-}
-
-void PlayTrack(int TrackToPlay) {
-  static int TrackPlaying = -1;
-
-  if (TrackPlaying != TrackToPlay) {
-    player.stop();
-    player.playFolder(2, TrackToPlay);
-    TrackPlaying = TrackToPlay;
-  }
-}
-
-void soundControl(float value) {
-  int currentRangeIndex = 0;
-  int emfValue = static_cast<int>(value);
-
-  if (emfValue <= 466)
-    currentRangeIndex = 1;
-  else if (emfValue <= 933)
-    currentRangeIndex = 2;
-  else
-    currentRangeIndex = 3;
-
-  if (currentRangeIndex != lastRangeIndex && playerInitialized) {
-    PlayTrack(currentRangeIndex);
-    lastRangeIndex = currentRangeIndex;
-  }
-}
-
-// ------------------ GRAPH FUNCTIONS ------------------
-
-// void calibrateEMF() {
-//   isCalibrating = true;
-//   calibrationStartTime = millis();
-//   float calibrationSum = 0;
-//   int readings = 0;
-//   int lastLedCount = -1;
-//   int lastServoPos = -1;
-//   playCalibrationSFX();
-
-//   for (int i = 0; i < LED_COUNT; i++) digitalWrite(LED_PINS[i], LOW);
-//   emfServo.write(0);
-
-//   while (millis() - calibrationStartTime < CALIBRATION_TIME) {
-//     sensors_event_t event;
-//     lis3mdl.getEvent(&event);
-//     float magnitude = sqrt(sq(event.magnetic.x) + sq(event.magnetic.y) + sq(event.magnetic.z));
-//     calibrationSum += magnitude;
-//     readings++;
-
-//     int progress = ((millis() - calibrationStartTime) * 100) / CALIBRATION_TIME;
-//     int currentLedCount = map(progress, 0, 100, 0, LED_COUNT);
-//     int currentServoPos = map(progress, 0, 100, 0, 80);
-
-//     if (currentLedCount != lastLedCount) {
-//       for (int i = 0; i < LED_COUNT; i++) {
-//         digitalWrite(LED_PINS[i], i < currentLedCount ? HIGH : LOW);
-//       }
-//       lastLedCount = currentLedCount;
-//     }
-
-//     if (currentServoPos != lastServoPos) {
-//       emfServo.write(currentServoPos);
-//       lastServoPos = currentServoPos;
-//     }
-
-//     drawProgressBar(progress);
-//     delay(10);
-//   }
-
-//   calibrationOffset = calibrationSum / readings;
-//   isCalibrating = false;
-//   for (int i = 0; i < LED_COUNT; i++) digitalWrite(LED_PINS[i], LOW);
-//   emfServo.write(0);
-//   tft.fillScreen(TFT_BLACK);
-// }
-
-float getEMFReading(const MagBaseline& baseline) {
-  sensors_event_t event;
-  lis3mdl.getEvent(&event);
-  
-  float deltaX = abs(event.magnetic.x - baseline.x);
-  float deltaY = abs(event.magnetic.y - baseline.y);
-  float deltaZ = abs(event.magnetic.z - baseline.z);
-  
-  return sqrt(sq(deltaX) + sq(deltaY) + sq(deltaZ));
-}
-
-void updateProgressIndicators(int progress) {
-  int lastLedCount = -1;
-  int lastServoPos = -1;
-  int currentLedCount = map(progress, 0, 100, 0, LED_COUNT);
-  int currentServoPos = map(progress, 0, 100, SERVO_MIN, SERVO_MAX);
-
-  if (currentLedCount != lastLedCount) {
-    for (int i = 0; i < LED_COUNT; i++) {
-      digitalWrite(LED_PINS[i], i < currentLedCount ? HIGH : LOW);
-    }
-    lastLedCount = currentLedCount;
-  }
-
-  if (currentServoPos != lastServoPos) {
-    emfServo.write(currentServoPos);
-    lastServoPos = currentServoPos;
-  }
-
-  drawProgressBar(progress);
-}
-
-MagBaseline calibrateMagnetometer() {
-  calibrationStartTime = millis();
-  playCalibrationSFX();
-  MagBaseline baseline;
-  isCalibrating = true;
-  
-  while (millis() - calibrationStartTime < CALIBRATION_TIME) {
-    sensors_event_t event;
-    lis3mdl.getEvent(&event);
-    
-    baseline.x += event.magnetic.x;
-    baseline.y += event.magnetic.y;
-    baseline.z += event.magnetic.z;
-    baseline.readings++;
-
-    int progress = ((millis() - calibrationStartTime) * 100) / CALIBRATION_TIME;
-    updateProgressIndicators(progress);
-    delay(10);
-  }
-
-  baseline.x /= baseline.readings;
-  baseline.y /= baseline.readings;
-  baseline.z /= baseline.readings;
-  
-  return baseline;
-}
-
-void servoControl(float emfReading) {
-  int servoAngle = map(emfReading, EMF_MIN, EMF_MAX, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-  emfServo.write(servoAngle);
-}
-
-void ledControl(float emfReading) {
-  static unsigned long lastLedUpdate = 0;
-  static int currentLed = 0;
-  int updateInterval = map(emfReading, EMF_MIN, EMF_MAX, 800, 50); // 500ms slowest, 50ms fastest
-  
-  if (millis() - lastLedUpdate > updateInterval) {
-    for (int i = 0; i < LED_COUNT; i++) {
-      digitalWrite(LED_PINS[i], LOW);
-    }
-    
-    digitalWrite(LED_PINS[currentLed], HIGH);
-    currentLed = (currentLed + 1) % LED_COUNT;
-    lastLedUpdate = millis();
-  }
-}
-
-void updateOperationalIndicators(float emfReading) {
-  static float lastReading = -1;
-
-  if (lastReading != emfReading) {
-    soundControl(emfReading);
-    servoControl(emfReading);
-    ledControl(emfReading);
-    lastReading = emfReading;
-  }
-}
-
-void updateDataBuffer(float newValue) {
-  if (dataBuffer.size() == MAX_DATA_POINTS) {
-    dataBuffer.shift();
-  }
-  dataBuffer.push(newValue);
 }
 
 void redrawBackground() {
@@ -604,44 +417,175 @@ void drawGraphLine() {
   }
 }
 
-// ------------------ BEZIER CURVE FUNCTIONS ------------------
+// --------------------------------------------------------------- UPDATES
 
-Point calculateBezierPoint(Point p0, Point p1, Point p2, Point p3, float t) {
-  float tt = t * t;
-  float ttt = tt * t;
-  float u = 1.0f - t;
-  float uu = u * u;
-  float uuu = uu * u;
+void updateBuffers(float newValue) {
+  if (dataBuffer.size() == MAX_DATA_POINTS) {
+    dataBuffer.shift();
+  }
 
-  Point pt;
-  pt.x = uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
-  pt.y = uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y;
-  return pt;
+  // if (emfBuffer.size() == EMF_BUFFER_SIZE) {
+  //   emfBuffer.shift();
+  // }
+
+  dataBuffer.push(newValue);
+ // emfBuffer.push(newValue);
 }
 
-uint16_t getColorForValue(float value) {
-  for (size_t i = 0; i < sizeof(thresholds) / sizeof(thresholds[0]); i++) {
-    if (value >= thresholds[i].value) {
-      return thresholds[i].color;
+void servoControl(float val) {
+  // float currentValue = emfBuffer.last();
+  int servoAngle = map(val, EMF_MIN, EMF_MAX, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+  servoAngle = constrain(servoAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+
+  if (servoAngle < 0) servoAngle = 0;
+  else if (servoAngle > 80) servoAngle = 80;
+
+  emfServo.write(servoAngle);
+}
+
+void ledControl(float val) {
+  // float currentValue = emfBuffer.last();
+  float ledSpeed = map(val, EMF_MIN, EMF_MAX, LED_SLOW, LED_FAST);
+  float interval = constrain(ledSpeed, LED_FAST, LED_SLOW);
+
+  static uint32_t previousMillis = 0;
+  unsigned long currentMillis = millis();
+  static byte currentLed = 0;
+
+  if (currentMillis - previousMillis >= interval) {
+    digitalWrite(LED_PINS[currentLed], LOW);
+    currentLed = (currentLed + 1) % NUM_LEDS;
+    digitalWrite(LED_PINS[currentLed], HIGH);
+    previousMillis = millis();
+  }
+}
+
+void updateOperationalIndicators(float value) {
+  static float lastvalue = -1;
+
+  if (lastvalue != value) {
+    soundControl(value);
+    ledControl(value);
+    servoControl(value);
+   
+    lastvalue = value;
+  }
+}
+
+// --------------------------------------------------------------- SOUND CONTROL
+
+void setVolume(int volume) {
+  if (playerInitialized) {
+    player.volume(volume);
+    delay(5);
+  }
+}
+
+void playCalibrationSFX() {
+  if (playerInitialized) {
+    player.playFolder(1, 4);
+    delay(2000);
+  }
+}
+
+void playBeepSFX() {
+  if (playerInitialized) {
+    player.playFolder(1, 1);
+    delay(500);
+  }
+}
+
+void PlayTrack(int TrackToPlay) {
+  static int TrackPlaying = -1;
+
+  if (TrackPlaying != TrackToPlay) {
+    player.stop();
+    player.playFolder(2, TrackToPlay);
+    TrackPlaying = TrackToPlay;
+  }
+}
+
+void soundControl(float value) {
+  int currentRangeIndex = 0;
+  int emfValue = static_cast<int>(value);
+
+  if (emfValue <= 466)
+    currentRangeIndex = 1;
+  else if (emfValue <= 833)
+    currentRangeIndex = 2;
+  else
+    currentRangeIndex = 3;
+
+  if (currentRangeIndex != lastRangeIndex && playerInitialized) {
+    PlayTrack(currentRangeIndex);
+    lastRangeIndex = currentRangeIndex;
+  }
+}
+
+// ------------------ GRAPH FUNCTIONS ------------------
+
+float getEMFReading() {
+  sensors_event_t event;
+  lis3mdl.getEvent(&event);
+  
+  float deltaX = abs(event.magnetic.x - baseline.x);
+  float deltaY = abs(event.magnetic.y - baseline.y);
+  float deltaZ = abs(event.magnetic.z - baseline.z);
+  
+  return sqrt(sq(deltaX) + sq(deltaY) + sq(deltaZ));
+}
+
+void updateProgressIndicators(int progress) {
+  int lastLedCount = -1, lastServoPos = -1;
+  int currentLedCount = map(progress, 0, 100, 0, LED_COUNT);
+  int currentServoPos = map(progress, 0, 100, SERVO_MIN, SERVO_MAX);
+  drawProgressBar(progress);
+
+  if (currentLedCount != lastLedCount) {
+    for (int i = 0; i < LED_COUNT; i++) {
+      digitalWrite(LED_PINS[i], i < currentLedCount ? HIGH : LOW);
     }
+    lastLedCount = currentLedCount;
   }
-  return CRITICAL_LOW;
+
+  if (currentServoPos != lastServoPos) {
+    emfServo.write(currentServoPos);
+    lastServoPos = currentServoPos;
+  }
 }
 
-void drawCurvedLine(Point p1, Point p2, uint16_t color1, uint16_t color2) {
-  Point ctrl1 = { (float)(p1.x + (p2.x - p1.x) * CURVE_TENSION), p1.y };
-  Point ctrl2 = { (float)(p2.x + (p2.x - p1.x) * CURVE_TENSION), p2.y };
+MagBaseline calibrateMagnetometer() {
+  MagBaseline caliBaseline;
+  calibrationStartTime = millis();
+  isCalibrating = true;
 
-  const int segments = 20;
-  for (int i = 0; i < segments; i++) {
-    float t1 = (float)i / segments;
-    float t2 = (float)(i + 1) / segments;
+  emfServo.write(0);
+  for (int i = 0; i < LED_COUNT; i++) digitalWrite(LED_PINS[i], LOW);
+  playCalibrationSFX();
 
-    Point pt1 = calculateBezierPoint(p1, ctrl1, ctrl2, p2, t1);
-    Point pt2 = calculateBezierPoint(p1, ctrl1, ctrl2, p2, t2);
+  while (millis() - calibrationStartTime < CALIBRATION_TIME) {
+    sensors_event_t event;
+    lis3mdl.getEvent(&event);
+    
+    caliBaseline.x += event.magnetic.x;
+    caliBaseline.y += event.magnetic.y;
+    caliBaseline.z += event.magnetic.z;
+    caliBaseline.readings++;
 
-    tft.drawLine(pt1.x, pt1.y, pt2.x, pt2.y, color1);
+    int progress = ((millis() - calibrationStartTime) * 100) / CALIBRATION_TIME;
+    updateProgressIndicators(progress);
+    delay(10);
   }
+
+  caliBaseline.x /= caliBaseline.readings;
+  caliBaseline.y /= caliBaseline.readings;
+  caliBaseline.z /= caliBaseline.readings;
+  
+  emfServo.write(0);
+  for (int i = 0; i < LED_COUNT; i++) digitalWrite(LED_PINS[i], LOW);
+  tft.fillScreen(TFT_BLACK);
+
+  return caliBaseline;
 }
 
 // ------------------ UPDATE FUNCTION ------------------
@@ -650,19 +594,20 @@ void updateGraph() {
   if (millis() - lastUpdateTime < UPDATE_INTERVAL) return;
   lastUpdateTime = millis();
 
-  float newValue = getEMFReading(baseline);
-  updateOperationalIndicators(newValue);
+  float newValue = getEMFReading();
   currentValue = newValue;
 
   redrawBackground();
   drawGraphLine();
   drawThresholdIndicators();
-  drawCurrentValue(newValue);
-  updateDataBuffer(newValue);
+  drawCurrentValue(currentValue);
+  updateBuffers(currentValue);
+  updateOperationalIndicators(currentValue);
 }
 
 // ------------------ CORE LOOP ------------------
 
 void loop() {
   updateGraph();
+  delay(10);
 }
