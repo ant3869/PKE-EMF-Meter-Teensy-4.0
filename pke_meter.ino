@@ -62,11 +62,10 @@ struct MagBaseline {
 #define GRAPH_HEIGHT 200  // Graph height
 
 #define MAX_DATA_POINTS 250
-//#define EMF_BUFFER_SIZE 5
 #define CURVE_TENSION 0.3
 #define THRESHOLD_SPACING_FACTOR 0.9  // Adjust this factor to fine-tune the spacing
-#define EMF_LABEL_X_OFFSET 125         // Adjust this value to move the EMF label
-#define EMF_VALUE_X_OFFSET 175      // Adjust this value to move the EMF value
+#define EMF_LABEL_X_OFFSET 125        // Adjust this value to move the EMF label
+#define EMF_VALUE_X_OFFSET 175        // Adjust this value to move the EMF value
 
 // ------------------ COLOR DEFINITIONS ------------------
 
@@ -82,9 +81,9 @@ struct MagBaseline {
 #define WARNING_LOW 0x001F
 #define CRITICAL_LOW 0x7817
 
-#define RANGE_COLOR 0x97FF   // Light Grey (RGB565: 198, 198, 198) 0xC618
+#define RANGE_COLOR 0x97FF  // Light Grey (RGB565: 198, 198, 198) 0xC618
 #define RATE_COLOR 0x97E0   // Light Green (RGB565: 151, 255, 128)
-#define MODE_COLOR 0xFD20    // Light Cyan (RGB565: 151, 255, 255)  0x97FF
+#define MODE_COLOR 0xFD20   // Light Cyan (RGB565: 151, 255, 255)  0x97FF
 
 const uint32_t BAR_COLOR = TFT_BLUE;
 const uint32_t BG_COLOR = TFT_BLACK;
@@ -101,17 +100,40 @@ ColorThreshold thresholds[] = {
 
 // ------------------ CONSTANTS ------------------
 
-#define UPDATE_INTERVAL 50  // Milliseconds for smooth updates
+#define TOUCH_CS -1
+#define UPDATE_INTERVAL 30  // Milliseconds for smooth updates
 #define CALIBRATION_TIME 13000
 
 #define SERVO_PIN 7
 #define SERVO_MIN_ANGLE 0
-#define SERVO_MAX_ANGLE 80
+#define SERVO_MAX_ANGLE 100
 
 #define LED_COUNT 7
 #define LED_SLOW 800
-#define LED_FAST 30
+#define LED_FAST 10
 const int LED_PINS[LED_COUNT] = { 2, 3, 4, 5, 6, 14, 15 };
+
+#define TOUCH_UP_GAUSS 23
+#define TOUCH_DOWN_GAUSS 22
+#define TOUCH_UP_RATE 21
+#define TOUCH_DOWN_RATE 20
+
+#define LEFT_SWITCH_PIN 17
+#define RIGHT_SWITCH_PIN 16
+
+#define MODE_COMBINED 0
+#define MODE_XYZ 1
+uint8_t currentMode = MODE_COMBINED;
+
+// Add to your existing CircularBuffer declarations
+CircularBuffer<float, MAX_DATA_POINTS> dataBufferX;
+CircularBuffer<float, MAX_DATA_POINTS> dataBufferY;
+CircularBuffer<float, MAX_DATA_POINTS> dataBufferZ;
+
+// Add to your existing global variables
+float currentValueX = 0;
+float currentValueY = 0;
+float currentValueZ = 0;
 
 // Progress bar configuration
 const int BAR_X = 30;
@@ -119,6 +141,32 @@ const int BAR_Y = 100;
 const int BAR_WIDTH = 260;
 const int BAR_HEIGHT = 20;
 const int TEXT_Y = BAR_Y - 30;
+
+const uint8_t gaussRanges[] = { 4, 8, 12, 16 };
+
+const uint8_t gaussSettings[] = {
+  LIS3MDL_RANGE_4_GAUSS,
+  LIS3MDL_RANGE_8_GAUSS,
+  LIS3MDL_RANGE_12_GAUSS,
+  LIS3MDL_RANGE_16_GAUSS
+};
+uint8_t currentGaussIndex = 0;
+
+const float dataRates[] = { 0.625, 1.25, 2.5, 5.0, 10.0, 20.0, 40.0, 80.0, 155.0 };
+
+const uint8_t rateSettings[] = {
+  LIS3MDL_DATARATE_0_625_HZ,
+  LIS3MDL_DATARATE_1_25_HZ,
+  LIS3MDL_DATARATE_2_5_HZ,
+  LIS3MDL_DATARATE_5_HZ,
+  LIS3MDL_DATARATE_10_HZ,
+  LIS3MDL_DATARATE_20_HZ,
+  LIS3MDL_DATARATE_40_HZ,
+  LIS3MDL_DATARATE_80_HZ,
+  LIS3MDL_DATARATE_155_HZ
+};
+uint8_t currentRateIndex = 8;  // Start with fastest rate
+
 
 // ------------------ OBJECTS ---------------------------
 
@@ -129,7 +177,6 @@ MagBaseline baseline;
 PWMServo emfServo;
 
 CircularBuffer<float, MAX_DATA_POINTS> dataBuffer;
-// CircularBuffer<float, EMF_BUFFER_SIZE> emfBuffer; // Buffer to store EMF readings
 
 // ------------------ GLOBAL VARIABLES ------------------
 
@@ -168,6 +215,10 @@ void drawCurvedLine(Point p1, Point p2, uint16_t color1, uint16_t color2);
 void updateGraph();
 
 // ------------------ BEZIER CURVE FUNCTIONS ------------------
+
+void updateDataBuffer(float value) {
+  dataBuffer.push(value);
+}
 
 Point calculateBezierPoint(Point p0, Point p1, Point p2, Point p3, float t) {
   float tt = t * t;
@@ -208,24 +259,46 @@ void drawCurvedLine(Point p1, Point p2, uint16_t color1, uint16_t color2) {
 }
 
 void drawSensorSettings() {
-  int y = (tft.height() - 8);  // Position just above the bottom
+  // Position calculation based on graph boundaries
+  const int TEXT_Y = GRAPH_Y_OFFSET + GRAPH_HEIGHT + 5;
+  const int TEXT_HEIGHT = 10;
+  const int SPACING = 70;  // Space between each setting
+
+  // Clear previous text efficiently - only clear needed area
+  tft.fillRect(
+    GRAPH_X_OFFSET,
+    TEXT_Y - 2,
+    GRAPH_WIDTH,  // Use graph width to match graph boundaries
+    TEXT_HEIGHT + 4,
+    BACKGROUND_COLOR);
+
+  // Prepare text settings
   tft.setTextSize(1);
+  int x = GRAPH_X_OFFSET + 10;  // Initial indent
 
-  // Define the current settings (these should match your actual sensor settings)
-  String range = "+/-4 Gauss";
-  String rate = "     10 Hz";
-  String mode = "     Ultra-High";
-
-  // Print each setting with its respective color
-  tft.setCursor(GRAPH_X_OFFSET, y);
+  // Draw Gauss setting
   tft.setTextColor(RANGE_COLOR);
-  tft.print(range);
+  tft.setCursor(x, TEXT_Y);
+  tft.print(String(gaussRanges[currentGaussIndex]) + " G");
 
+  // Draw Rate setting
+  x += SPACING;
   tft.setTextColor(RATE_COLOR);
-  tft.print(rate);
+  tft.setCursor(x, TEXT_Y);
+  tft.print(String(dataRates[currentRateIndex], 1) + " Hz");
 
+  // Draw Mode
+  x += SPACING;
   tft.setTextColor(MODE_COLOR);
-  tft.print(mode);
+  tft.setCursor(x, TEXT_Y);
+  tft.print("Ultra-High");
+}
+
+void updateMagSettings() {
+  lis3mdl.setRange((lis3mdl_range_t)gaussSettings[currentGaussIndex]);
+  lis3mdl.setDataRate((lis3mdl_dataRate_t)rateSettings[currentRateIndex]);
+  drawSensorSettings();
+  delay(10);
 }
 
 // ------------------ INITIALIZATION ------------------
@@ -2662,7 +2735,6 @@ void setupServo() {
 void setupPlayer() {
   for (int attempts = 0; attempts < 3; attempts++) {
     if (player.begin(Serial1)) {
-      //  player.setTimeOut(500);
       DEBUG_PRINTLN("DFPlayer initialized successfully.", 200);
       playerInitialized = true;
       setVolume(5);
@@ -2692,6 +2764,13 @@ void setupIMU() {
   }
 }
 
+void setupControls() {
+  pinMode(TOUCH_UP_GAUSS, INPUT);
+  pinMode(TOUCH_DOWN_GAUSS, INPUT);
+  pinMode(TOUCH_UP_RATE, INPUT);
+  pinMode(TOUCH_DOWN_RATE, INPUT);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial1.begin(9600);
@@ -2701,6 +2780,7 @@ void setup() {
   setupServo();
   setupLEDS();
   setupIMU();
+  setupControls();
 
   baseline = calibrateMagnetometer();
 
@@ -2709,6 +2789,75 @@ void setup() {
   redrawBackground();         // Draw the grid and baseline
   drawThresholdIndicators();  // Draw initial threshold labels
   drawSensorSettings();
+}
+
+// --------------------------------------------------------------- BUTTONS
+
+
+void handleTouchInputs() {
+  static unsigned long lastButtonPress = 0;
+  const unsigned long DEBOUNCE_TIME = 200;  // Milliseconds
+
+  unsigned long currentTime = millis();
+  if (currentTime - lastButtonPress < DEBOUNCE_TIME) return;
+
+  // Read current touch states
+  bool touchUpGauss = digitalRead(TOUCH_UP_GAUSS);
+  bool touchDownGauss = digitalRead(TOUCH_DOWN_GAUSS);
+  bool touchUpRate = digitalRead(TOUCH_UP_RATE);
+  bool touchDownRate = digitalRead(TOUCH_DOWN_RATE);
+
+  static bool prevUpGauss = false;
+  static bool prevDownGauss = false;
+  static bool prevUpRate = false;
+  static bool prevDownRate = false;
+
+  // Calculate array bounds once
+  const uint8_t MAX_GAUSS_INDEX = sizeof(gaussSettings) / sizeof(gaussSettings[0]) - 1;
+  const uint8_t MAX_RATE_INDEX = sizeof(rateSettings) / sizeof(rateSettings[0]) - 1;
+
+  bool settingChanged = false;
+
+  // Handle Gauss range changes with bounds check
+  if (touchUpGauss && !prevUpGauss) {
+    if (currentGaussIndex < MAX_GAUSS_INDEX) {
+      currentGaussIndex++;
+      settingChanged = true;
+    }
+  }
+  if (touchDownGauss && !prevDownGauss) {
+    if (currentGaussIndex > 0) {
+      currentGaussIndex--;
+      settingChanged = true;
+    }
+  }
+
+  // Handle Data rate changes with bounds check
+  if (touchUpRate && !prevUpRate) {
+    if (currentRateIndex < MAX_RATE_INDEX) {
+      currentRateIndex++;
+      settingChanged = true;
+    }
+  }
+  if (touchDownRate && !prevDownRate) {
+    if (currentRateIndex > 0) {
+      currentRateIndex--;
+      settingChanged = true;
+    }
+  }
+
+  // Update settings and sound only if changes occurred
+  if (settingChanged) {
+    lastButtonPress = currentTime;
+    updateMagSettings();
+    playBeepSFX();
+  }
+
+  // Update previous states
+  prevUpGauss = touchUpGauss;
+  prevDownGauss = touchDownGauss;
+  prevUpRate = touchUpRate;
+  prevDownRate = touchDownRate;
 }
 
 // ------------------ DRAW FUNCTIONS ------------------
@@ -2749,75 +2898,68 @@ void drawThresholdIndicators() {
 }
 
 void drawGrid() {
+  const size_t numThresholds = sizeof(thresholds) / sizeof(thresholds[0]);
   // Vertical grid lines
   for (int x = 0; x <= GRAPH_WIDTH; x += GRAPH_WIDTH / 10) {
     tft.drawFastVLine(GRAPH_X_OFFSET + x, GRAPH_Y_OFFSET, GRAPH_HEIGHT, GRID_COLOR);
   }
 
   // Horizontal grid lines
-  for (int i = 0; i <= (sizeof(thresholds) / sizeof(thresholds[0])) - 1; i++) {
+  for (size_t i = 0; i < numThresholds; i++) {
     int yPos = GRAPH_Y_OFFSET + (i * (GRAPH_HEIGHT / ((sizeof(thresholds) / sizeof(thresholds[0])) - 1)));
     tft.drawFastHLine(GRAPH_X_OFFSET, yPos, GRAPH_WIDTH, GRID_COLOR);
   }
 }
 
-void drawBaseline() {
-  tft.setTextSize(1);
-  tft.setTextColor(BASELINE_COLOR);
 
-  // Array to store baseline values and their axis labels
+
+void drawBaseline() {
   struct BaselineData {
     String axis;
     float value;
+    int16_t screenY;
   };
 
   BaselineData baselines[] = {
-    { "x", baseline.x },
-    { "y", baseline.y },
-    { "z", baseline.z }
+    { "x", baseline.x, 0 },
+    { "y", baseline.y, 0 },
+    { "z", baseline.z, 0 }
   };
 
-  // Array to store the Y positions for the labels to handle stacking
-  int labelPositions[3] = { 0, 0, 0 };
-  int labelIndex = 0;
+  tft.setTextSize(1);
+  tft.setTextColor(BASELINE_COLOR);
 
+  const int16_t LABEL_SPACING = 12;
+  const int16_t MIN_LABEL_GAP = 10;
+  int validLines = 0;
+
+  // First pass: Calculate screen positions
   for (int i = 0; i < 3; i++) {
-    float value = baselines[i].value;
+    if (baselines[i].value < 0.0) continue;
 
-    // Handle negative values by skipping them
-    if (value < 0.0) {
-      continue;
-    }
+    baselines[i].screenY = (baselines[i].value == 0.0) ? GRAPH_Y_OFFSET + GRAPH_HEIGHT - 5 : map(baselines[i].value, yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET);
 
-    // If value is zero, set it to the bottom of the graph
-    int baselineY;
-    if (value == 0.0) {
-      // baselineY = GRAPH_Y_OFFSET + GRAPH_HEIGHT - 5; // Near the bottom
-    } else {
-      baselineY = map(value, yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET);
-    }
-
-    // Draw a dotted baseline
-    for (int x = GRAPH_X_OFFSET; x < GRAPH_X_OFFSET + GRAPH_WIDTH; x += 5) {
-      tft.drawPixel(x, baselineY, BASELINE_COLOR);
-    }
-
-    // Adjust label position to avoid overlap
-    for (int j = 0; j < labelIndex; j++) {
-      if (abs(baselineY - labelPositions[j]) < 10) {
-        baselineY += 12;  // Move the label down if too close to previous labels
+    // Adjust for overlaps with previous lines
+    for (int j = 0; j < i; j++) {
+      if (baselines[j].value >= 0.0 && abs(baselines[i].screenY - baselines[j].screenY) < MIN_LABEL_GAP) {
+        baselines[i].screenY += LABEL_SPACING;
       }
     }
+    validLines++;
+  }
 
-    // Store the Y position to check for future overlaps
-    labelPositions[labelIndex++] = baselineY;
+  // Second pass: Draw lines and labels
+  for (const auto& line : baselines) {
+    if (line.value < 0.0) continue;
 
-    // Draw the label
-    tft.setCursor(GRAPH_X_OFFSET, baselineY - 1);
-    tft.print("  baseline (");
-    tft.print(baselines[i].axis);
-    tft.print("): ");
-    tft.print(value, 1);  // One decimal place
+    // Draw dotted line
+    for (int x = GRAPH_X_OFFSET; x < GRAPH_X_OFFSET + GRAPH_WIDTH; x += 5) {
+      tft.drawPixel(x, line.screenY, BASELINE_COLOR);
+    }
+
+    // Draw label
+    tft.setCursor(GRAPH_X_OFFSET, line.screenY - 1);
+    tft.printf("  baseline (%s): %.1f", line.axis.c_str(), line.value);
   }
 }
 
@@ -2875,16 +3017,10 @@ void updateBuffers(float newValue) {
     dataBuffer.shift();
   }
 
-  // if (emfBuffer.size() == EMF_BUFFER_SIZE) {
-  //   emfBuffer.shift();
-  // }
-
   dataBuffer.push(newValue);
-  // emfBuffer.push(newValue);
 }
 
 void servoControl(float val) {
-  // float currentValue = emfBuffer.last();
   int servoAngle = map(val, EMF_MIN, EMF_MAX, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoAngle = constrain(servoAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
 
@@ -2895,7 +3031,6 @@ void servoControl(float val) {
 }
 
 void ledControl(float val) {
-  // float currentValue = emfBuffer.last();
   float ledSpeed = map(val, EMF_MIN, EMF_MAX, LED_SLOW, LED_FAST);
   float interval = constrain(ledSpeed, LED_FAST, LED_SLOW);
 
@@ -2908,18 +3043,6 @@ void ledControl(float val) {
     currentLed = (currentLed + 1) % LED_COUNT;
     digitalWrite(LED_PINS[currentLed], HIGH);
     previousMillis = millis();
-  }
-}
-
-void updateOperationalIndicators(float value) {
-  static float lastvalue = -1;
-
-  if (lastvalue != value) {
-    soundControl(value);
-    ledControl(value);
-    servoControl(value);
-
-    lastvalue = value;
   }
 }
 
@@ -2942,17 +3065,22 @@ void playCalibrationSFX() {
 void playBeepSFX() {
   if (playerInitialized) {
     player.playFolder(1, 1);
-    delay(500);
   }
 }
 
 void PlayTrack(int TrackToPlay) {
   static int TrackPlaying = -1;
+  static unsigned long lastPlayTime = 0;
+  const unsigned long MIN_PLAY_INTERVAL = 100;  // Minimum time between track changes
 
-  if (TrackPlaying != TrackToPlay) {
+  unsigned long currentTime = millis();
+
+  if (TrackPlaying != TrackToPlay && (currentTime - lastPlayTime) > MIN_PLAY_INTERVAL) {
     player.stop();
+    delay(10);  // Short delay for player to stabilize
     player.playFolder(2, TrackToPlay);
     TrackPlaying = TrackToPlay;
+    lastPlayTime = currentTime;
   }
 }
 
@@ -2974,6 +3102,56 @@ void soundControl(float value) {
 }
 
 // ------------------ GRAPH FUNCTIONS ------------------
+
+void updateDataBuffers(float x, float y, float z) {
+  if (dataBufferX.size() == MAX_DATA_POINTS) {
+    dataBufferX.shift();
+    dataBufferY.shift();
+    dataBufferZ.shift();
+  }
+  dataBufferX.push(x);
+  dataBufferY.push(y);
+  dataBufferZ.push(z);
+}
+
+void drawGraphLineXYZ() {
+  if (dataBufferX.size() > 1) {
+    for (int i = 0; i < dataBufferX.size() - 1; i++) {
+      // X Axis (Red)
+      Point p1x = {
+        (float)map(i, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferX[i], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      Point p2x = {
+        (float)map(i + 1, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferX[i + 1], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      drawCurvedLine(p1x, p2x, TFT_RED, TFT_RED);
+
+      // Y Axis (Green)
+      Point p1y = {
+        (float)map(i, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferY[i], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      Point p2y = {
+        (float)map(i + 1, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferY[i + 1], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      drawCurvedLine(p1y, p2y, TFT_GREEN, TFT_GREEN);
+
+      // Z Axis (Blue)
+      Point p1z = {
+        (float)map(i, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferZ[i], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      Point p2z = {
+        (float)map(i + 1, 0, MAX_DATA_POINTS - 1, GRAPH_X_OFFSET, GRAPH_X_OFFSET + GRAPH_WIDTH),
+        (float)map(dataBufferZ[i + 1], yMin, yMax, GRAPH_Y_OFFSET + GRAPH_HEIGHT, GRAPH_Y_OFFSET)
+      };
+      drawCurvedLine(p1z, p2z, TFT_BLUE, TFT_BLUE);
+    }
+  }
+}
 
 float getEMFReading() {
   sensors_event_t event;
@@ -3042,14 +3220,14 @@ MagBaseline calibrateMagnetometer() {
     baseline.average = 0;
   }
 
-  #ifdef DEBUG_MODE
-    DEBUG_PRINTLN("Baseline X: ", 0);
-    DEBUG_PRINTLN(baseline.x, 0);
-    DEBUG_PRINTLN("Baseline Y: ", 0);
-    DEBUG_PRINTLN(baseline.y, 0);
-    DEBUG_PRINTLN("Baseline Z: ", 0);
-    DEBUG_PRINTLN(baseline.z, 0);
-  #endif
+#ifdef DEBUG_MODE
+  DEBUG_PRINTLN("Baseline X: ", 0);
+  DEBUG_PRINTLN(baseline.x, 0);
+  DEBUG_PRINTLN("Baseline Y: ", 0);
+  DEBUG_PRINTLN(baseline.y, 0);
+  DEBUG_PRINTLN("Baseline Z: ", 0);
+  DEBUG_PRINTLN(baseline.z, 0);
+#endif
 
   for (int i = 0; i < LED_COUNT; i++) digitalWrite(LED_PINS[i], LOW);
   emfServo.write(0);
@@ -3062,15 +3240,87 @@ MagBaseline calibrateMagnetometer() {
 
 // ------------------ UPDATE FUNCTION ------------------
 
+void handleModeSwitch() {
+  // Add your switch pin reading logic here
+  // For example:
+  if (digitalRead(LEFT_SWITCH_PIN)) currentMode = MODE_COMBINED;
+  if (digitalRead(RIGHT_SWITCH_PIN)) currentMode = MODE_XYZ;
+}
+
+void updateLEDSequence(float emfReading) {
+  if (isCalibrating) return;
+
+  // int16_t currentValue = emfBuffer.last();
+  int16_t currentValue = emfReading;
+  int updateRate = map(currentValue, EMF_MIN, EMF_MAX, LED_SLOW, LED_FAST);
+
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate >= static_cast<uint32_t>(updateRate)) {
+    digitalWrite(LED_PINS[ledSequenceIndex], LOW);
+    ledSequenceIndex = (ledSequenceIndex > 0) ? ledSequenceIndex - 1 : LED_COUNT - 1;
+    digitalWrite(LED_PINS[ledSequenceIndex], HIGH);
+    lastUpdate = millis();
+  }
+}
+
+void updateOperationalIndicators(float emfReading) {
+  static float lastServoReading = -1;
+  static unsigned long lastSoundUpdate = 0;
+  unsigned long currentTime = millis();
+
+  // Update servo only on significant changes
+  if (abs(emfReading - lastServoReading) > 1.0) {
+    servoControl(emfReading);
+    lastServoReading = emfReading;
+  }
+
+  // Update sound with debounce
+  if (currentTime - lastSoundUpdate > 500) {  // 500ms debounce
+    soundControl(emfReading);
+    lastSoundUpdate = currentTime;
+  }
+
+  // LED sequence runs independently
+  updateLEDSequence(emfReading);
+}
+
+float getHighestAxis(float x, float y, float z) {
+  return max(max(x, y), z);
+}
+
 void updateGraph() {
   if (millis() - lastUpdateTime < UPDATE_INTERVAL) return;
   lastUpdateTime = millis();
 
-  float newValue = getEMFReading();
-  currentValue = newValue;
+  sensors_event_t event;
+  lis3mdl.getEvent(&event);
 
+  float deltaX = abs(event.magnetic.x - baseline.x);
+  float deltaY = abs(event.magnetic.y - baseline.y);
+  float deltaZ = abs(event.magnetic.z - baseline.z);
+
+  handleModeSwitch();
+
+  if (currentMode == MODE_COMBINED) {
+    float newValue = sqrt(sq(deltaX) + sq(deltaY) + sq(deltaZ));
+    currentValue = newValue;
+    updateDataBuffer(newValue);
+  } else {
+    currentValueX = deltaX;
+    currentValueY = deltaY;
+    currentValueZ = deltaZ;
+    updateDataBuffers(deltaX, deltaY, deltaZ);
+    currentValue = getHighestAxis(deltaX, deltaY, deltaZ);
+  }
+
+  // Update display and indicators
   redrawBackground();
-  drawGraphLine();
+  if (currentMode == MODE_COMBINED) {
+    drawGraphLine();
+  } else {
+    drawGraphLineXYZ();
+  }
+
   drawThresholdIndicators();
   drawCurrentValue(currentValue);
   updateBuffers(currentValue);
@@ -3080,6 +3330,7 @@ void updateGraph() {
 // ------------------ CORE LOOP ------------------
 
 void loop() {
+  handleTouchInputs();
   updateGraph();
   delay(10);
 }
